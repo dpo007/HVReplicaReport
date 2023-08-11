@@ -1,5 +1,5 @@
 # Get-HVReplicaReport.ps1
-This PowerShell script generates a report of all replicas in a given environment.  The report is saved as an HTML file at the specified file path.
+This PowerShell script generates a report of all VM replicas in a given Hyper-V environment.  The report is saved as an HTML file at the specified file path, and includes fancy HTML highlighting on hover, for easy tracking.
 
 ## Usage
 To use this script, create a `settings.json` file with a list of Hyper-V hosts, and then run the script in a PowerShell console with the desired parameters.
