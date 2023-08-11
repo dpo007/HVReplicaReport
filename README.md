@@ -9,6 +9,7 @@ To use this script, simply run it in a PowerShell console with the desired param
 `SkipSettingsCheck`: A switch that skips checking if VM settings match in replica(s).
 
 **Example usage:**
+
 `.\Get-ReplicaReport.ps1 -ReportFilePath 'C:\Users\JohnDoe\Documents\ReplicaReport.html'`
 
 ## Contributing
