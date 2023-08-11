@@ -1,0 +1,18 @@
+Get-ReplicaReport.ps1
+This PowerShell script generates a report of all replicas in a given environment. The report is saved as an HTML file at the specified file path.
+
+Usage
+To use this script, simply run it in a PowerShell console with the desired parameters. The available parameters are:
+
+ReportFilePath: The file path where the report will be saved. Defaults to c:\temp\ReplicaReport.html.
+SkipSettingsCheck: A switch that skips the check for required settings. Use with caution.
+Example usage:
+
+Function Definitions
+This script contains several function definitions that are used to generate the report. These functions are located in the FunctionDefinitions region of the script.
+
+Contributing
+If you find a bug or have a suggestion for improvement, please feel free to open an issue or submit a pull request.
+
+License
+This script is licensed under the MIT License. See the LICENSE file for more information.
