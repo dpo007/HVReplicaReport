@@ -5,6 +5,7 @@ This PowerShell script generates a report of all replicas in a given environment
 To use this script, simply run it in a PowerShell console with the desired parameters. The available parameters are:
 
 `ReportFilePath`: The file path where the report will be saved. Defaults to c:\temp\ReplicaReport.html.
+
 `SkipSettingsCheck`: A switch that skips checking if VM settings match in replica(s).
 
 **Example usage:**
