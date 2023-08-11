@@ -1,3 +1,5 @@
+#Requires -Version 5.1
+#Requires -Modules Hyper-V
 param (
     [string]$ReportFilePath = 'c:\temp\ReplicaReport.html',
     [switch]$SkipSettingsCheck
@@ -81,11 +83,14 @@ function Test-VMReplicaSettingsMatch {
 # Main Entry Point
 ###################
 
-# Load list of Hyper-V Host Servers from settings file.
+# Set default error action
+$ErrorActionPreference = 'Stop'
+
+# Load list of Hyper-V Host Servers from settings file
 Write-Host ('Loading list of Hyper-V Host Servers from settings file...')
 $settingsPath = Join-Path -Path $PSScriptRoot -ChildPath 'settings.json'
 
-# If the settings file doesn't exist, abort script with error.
+# If the settings file doesn't exist, abort script with error
 if (!(Test-Path -Path $settingsPath)) {
     Write-Error ('Settings.json file not found at: {0}.  See ExampleSettings.json.' -f $settingsPath)
     exit
@@ -97,7 +102,7 @@ $hvHosts = $settings.hvHosts
 Write-Host 'List of host servers loaded from settings file:'
 $hvHosts | ForEach-Object { Write-Host ('- {0}' -f $_) }
 
-# Retrieve virtual machine replication information from Hyper-V hosts.
+# Retrieve virtual machine replication information from Hyper-V hosts
 # Filter the output to only include virtual machine replications that have a RelationshipType other than 'Extended'
 Write-Host ('Retrieving virtual machine replication information from {0} Hyper-V hosts...' -f $hvHosts.Count)
 $repInfo = Get-VMReplication -ComputerName $hvHosts | Where-Object { $_.RelationshipType -ne 'Extended' }
