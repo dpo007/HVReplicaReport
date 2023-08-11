@@ -84,6 +84,13 @@ function Test-VMReplicaSettingsMatch {
 # Load list of Hyper-V Host Servers from settings file.
 Write-Host ('Loading list of Hyper-V Host Servers from settings file...')
 $settingsPath = Join-Path -Path $PSScriptRoot -ChildPath 'settings.json'
+
+# If the settings file doesn't exist, abort script with error.
+if (!(Test-Path -Path $settingsPath)) {
+    Write-Error ('Settings.json file not found at: {0}.  See ExampleSettings.json.' -f $settingsPath)
+    exit
+}
+
 $jsonContent = Get-Content -Path $settingsPath -Raw
 $settings = ConvertFrom-Json -InputObject $jsonContent
 $hvHosts = $settings.hvHosts
