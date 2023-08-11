@@ -6,7 +6,7 @@ To use this script, create a `settings.json` file with a list of Hyper-V hosts, 
 
 The available parameters are:
 
-`ReportFilePath`: The file path where the report will be saved. Defaults to c:\temp\ReplicaReport.html.
+`ReportFilePath`: The file path where the report will be saved.  (Defaults to `c:\temp\ReplicaReport.html`)
 
 `SkipSettingsCheck`: A switch that skips checking if VM settings match in replica(s).
 
