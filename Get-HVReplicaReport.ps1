@@ -201,7 +201,12 @@ $repInfoHTML = $repInfoHTML + ('<div id="dateStamp">Report created on {0}, at {1
 # Define the HTML header.
 $htmlHeader = @"
 <style>
-TABLE
+body
+{
+    font-family: 'Hack', monospace;
+}
+
+table
 {
     border-width: 1px;
     border-style: solid;
@@ -209,7 +214,7 @@ TABLE
     border-collapse: collapse;
 }
 
-TH
+th
 {
     border-width: 1px;
     padding: 3px;
@@ -218,7 +223,7 @@ TH
     background-color: #6495ED;
 }
 
-TD
+td
 {
     border-width: 1px;
     padding: 3px;
