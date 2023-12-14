@@ -19,8 +19,6 @@ function Test-VMReplicaSettingsMatch {
         [string]$ReplicaHost
     )
 
-    Write-Host ('Testing settings match for VM: {0}' -f $VMName)
-
     # Get settings of primary VM (on PrimaryHost)
     $VM1 = Get-VM -ComputerName $PrimaryHost -Name $VMName
 
@@ -43,7 +41,7 @@ function Test-VMReplicaSettingsMatch {
         CPUCount        = $VM1CPU.Count
         HardDriveCount  = $VM1HardDrives.Count
         HardDriveSize   = $VM1HardDrives.Size
-        SCSIControllers = $VM1SCSIControllers
+        SCSIControllers = $VM1SCSIControllers | Select-Object -Property Name, Drives
     }
 
     # Get settings of replica VM (on ReplicaHost)
@@ -61,18 +59,22 @@ function Test-VMReplicaSettingsMatch {
 
     # Combine the returned objects into a single object
     $VM2Settings = New-Object -TypeName PSObject -Property @{
-        VMName          = $VM2.Name
-        MemoryStartup   = $VM2Memory.Startup
-        MemoryMinimum   = $VM2Memory.Minimum
-        MemoryMaximum   = $VM2Memory.Maximum
-        CPUCount        = $VM2CPU.Count
-        HardDriveCount  = $VM2HardDrives.Count
-        HardDriveSize   = $VM2HardDrives.Size
-        SCSIControllers = $VM2SCSIControllers
+        VMName         = $VM2.Name
+        MemoryStartup  = $VM2Memory.Startup
+        MemoryMinimum  = $VM2Memory.Minimum
+        MemoryMaximum  = $VM2Memory.Maximum
+        CPUCount       = $VM2CPU.Count
+        HardDriveCount = $VM2HardDrives.Count
+        HardDriveSize  = $VM2HardDrives.Size
+        SCSIControllers = $VM2SCSIControllers | Select-Object -Property Name, Drives
     }
 
-    # Compare the settings of VM1 and VM2 returning True if they match and False if they don't.
-    return !(Compare-Object $VM1Settings.PSObject.Properties $VM2Settings.PSObject.Properties)
+    # Convert the VM settings objects to JSON and compare them
+    $VM1Json = $VM1Settings | ConvertTo-Json
+    $VM2Json = $VM2Settings | ConvertTo-Json
+
+    # Compare the settings of VM1 and VM2 returning True if the match and False if they don't.
+    return !(Compare-Object $VM1Json $VM2Json)
 }
 
 ##############################
