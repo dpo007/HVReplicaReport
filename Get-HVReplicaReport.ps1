@@ -113,7 +113,7 @@ Write-Host 'Generating report...'
 
 # Sort the Replication info output by Name and Mode
 # Convert the output to HTML and specify the properties to include in the table
-$repInfoHTML = $repInfo | Sort-Object Name, Mode | ConvertTo-Html -Fragment -Property Name, Mode, PrimaryServer, ReplicaServer, State, Health, FrequencySec, RelationshipType
+$repInfoHTML = $repInfo | Sort-Object Name, Mode | ConvertTo-Html -Fragment -Property Name, Mode, PrimaryServer, ReplicaServer, State, Health, FrequencySec, RelationshipType -PreContent '<div id="ReplicationTable">' -PostContent '</div>'
 
 if (!$SkipSettingsCheck) {
     Write-Host 'Performing VM settings check...'
@@ -190,7 +190,7 @@ if (!$SkipSettingsCheck) {
     }
 
     # Convert the replicaReport array to HTML and specify the properties to include in the table
-    $replicaReportHTML = $replicaReport | Sort-Object Name | ConvertTo-Html -Fragment -Property Name, ReplicaSettingsMatch, ExtendedReplicaSettingsMatch
+    $replicaReportHTML = $replicaReport | Sort-Object Name | ConvertTo-Html -Fragment -Property Name, ReplicaSettingsMatch, ExtendedReplicaSettingsMatch -PreContent '<div id="SettingsMatchTable">' -PostContent '</div>'
 
     # Combine $replicaReportHTML and $repInfoHTML into a single HTML
     $repInfoHTML = $repInfoHTML + '<br />' + $replicaReportHTML
