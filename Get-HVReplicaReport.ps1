@@ -252,36 +252,80 @@ div#dateStamp
 # Define the HTML footer that contains JS scripts.
 $htmlFooter = @"
 <script type="text/javascript">
-var tds = document.getElementsByTagName('td');
-for (var i = 0; i < tds.length; i++) {
-    if (tds[i].textContent == 'False') {
-        tds[i].style.color = 'red';
-    } else if (tds[i].textContent == 'True') {
-        tds[i].style.color = 'green';
-    }
-}
+    document.addEventListener('DOMContentLoaded', function() {
+        // Get all <td> elements in the document
+        const tds = document.getElementsByTagName('td');
+        const tdsLength = tds.length;
 
-const tableRows = document.querySelectorAll('table tr');
-
-tableRows.forEach(row => {
-    row.addEventListener('mouseover', () => {
-        const firstCell = row.cells[0];
-        const valueToMatch = firstCell.textContent;
-        tableRows.forEach(otherRow => {
-            if (otherRow === row) {
-                row.style.backgroundColor = '#FBF719';
-            } else if (otherRow.cells[0].textContent === valueToMatch) {
-                otherRow.style.backgroundColor = '#E1DE16';
+        // Loop through each <td> element
+        for (let i = 0; i < tdsLength; i++) {
+            const textContent = tds[i].textContent;
+            if (textContent === 'False') {
+                tds[i].style.color = 'red';
+            } else if (textContent === 'True') {
+                tds[i].style.color = 'green';
             }
-        });
-    });
+        }
 
-    row.addEventListener('mouseout', () => {
-        tableRows.forEach(otherRow => {
-            otherRow.style.backgroundColor = '';
+        // Select the table within the element with id 'ReplicationTable'
+        const table = document.querySelector('#ReplicationTable table');
+        if (table) {
+            // Get all <th> elements (table headers) in the table
+            const headers = table.getElementsByTagName('th');
+            let healthColumnIndex = -1;
+
+            // Loop through the headers to find the 'Health' column
+            Array.from(headers).forEach((header, index) => {
+                if (header.textContent.trim() === 'Health') {
+                    healthColumnIndex = index;
+                }
+            });
+
+            // If the 'Health' column is found
+            if (healthColumnIndex !== -1) {
+                // Get all rows in the table
+                const rows = table.getElementsByTagName('tr');
+                const rowsLength = rows.length;
+
+                // Loop through each row, starting from 1 to skip the header row
+                for (let i = 1; i < rowsLength; i++) {
+                    const cells = rows[i].getElementsByTagName('td');
+                    const healthCell = cells[healthColumnIndex];
+                    if (healthCell) {
+                        const healthText = healthCell.textContent.trim();
+                        healthCell.style.color = healthText === 'Normal' ? 'green' : 'red';
+                    }
+                }
+            }
+        }
+
+        // Get all table rows
+        const tableRows = document.querySelectorAll('table tr');
+
+        // Add mouseover and mouseout event listeners to each row
+        tableRows.forEach(row => {
+            row.addEventListener('mouseover', () => {
+                const firstCell = row.cells[0];
+                const valueToMatch = firstCell.textContent;
+                tableRows.forEach(otherRow => {
+                    if (otherRow === row) {
+                        // Highlight the row being hovered over
+                        row.style.backgroundColor = '#FBF719';
+                    } else if (otherRow.cells[0].textContent === valueToMatch) {
+                        // Highlight rows with matching first cell content
+                        otherRow.style.backgroundColor = '#E1DE16';
+                    }
+                });
+            });
+
+            row.addEventListener('mouseout', () => {
+                // Remove background color when mouse leaves the row
+                tableRows.forEach(otherRow => {
+                    otherRow.style.backgroundColor = '';
+                });
+            });
         });
     });
-});
 </script>
 "@
 
