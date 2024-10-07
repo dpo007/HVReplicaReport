@@ -60,13 +60,13 @@ function Test-VMReplicaSettingsMatch {
 
     # Combine the returned objects into a single object
     $VM2Settings = New-Object -TypeName PSObject -Property @{
-        VMName         = $VM2.Name
-        MemoryStartup  = $VM2Memory.Startup
-        MemoryMinimum  = $VM2Memory.Minimum
-        MemoryMaximum  = $VM2Memory.Maximum
-        CPUCount       = $VM2CPU.Count
-        HardDriveCount = $VM2HardDrives.Count
-        HardDriveSize  = $VM2HardDrives.Size
+        VMName          = $VM2.Name
+        MemoryStartup   = $VM2Memory.Startup
+        MemoryMinimum   = $VM2Memory.Minimum
+        MemoryMaximum   = $VM2Memory.Maximum
+        CPUCount        = $VM2CPU.Count
+        HardDriveCount  = $VM2HardDrives.Count
+        HardDriveSize   = $VM2HardDrives.Size
         SCSIControllers = $VM2SCSIControllers | Select-Object -Property Name, Drives
     }
 
@@ -336,7 +336,7 @@ $htmlFooter = @"
         const timeString = dateTimeString[2];
 
         // Combine date and time into a single string
-        const fullDateTimeString = '`${dateString} `${timeString}';
+        const fullDateTimeString = ```${dateString} `${timeString}``;
 
         // Parse the extracted date and time into a Date object
         const reportDate = new Date(fullDateTimeString);
