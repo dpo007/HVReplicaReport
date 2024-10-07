@@ -2,6 +2,7 @@
 #Requires -Modules Hyper-V
 param (
     [string]$ReportFilePath = 'c:\temp\ReplicaReport.html',
+    [int]$MaxReportAgeInMinutes = 60,
     [switch]$SkipSettingsCheck
 )
 
@@ -325,6 +326,55 @@ $htmlFooter = @"
                 });
             });
         });
+
+        // Get the text content of the dateStamp div
+        const dateStampText = document.getElementById('dateStamp').textContent;
+
+        // Extract the date and time part from the text
+        const dateTimeString = dateStampText.match(/on (.+), at (.+)/);
+        const dateString = dateTimeString[1];
+        const timeString = dateTimeString[2];
+
+        // Combine date and time into a single string
+        const fullDateTimeString = '`${dateString} `${timeString}';
+
+        // Parse the extracted date and time into a Date object
+        const reportDate = new Date(fullDateTimeString);
+
+        // Get the current date and time
+        const currentDate = new Date();
+
+        // Calculate the difference in milliseconds
+        const timeDifference = currentDate - reportDate;
+
+        // Convert the difference to minutes
+        const timeDifferenceInMinutes = timeDifference / (1000 * 60);
+
+        // Check if the report date is more than the specified number of minutes ago
+        if (timeDifferenceInMinutes > $MaxReportAgeInMinutes) {
+            // Move the div element to the top of the body
+            const dateStampDiv = document.getElementById('dateStamp');
+            document.body.insertBefore(dateStampDiv, document.body.firstChild);
+
+            // Style the div element
+            dateStampDiv.style.fontSize = '2em';
+            dateStampDiv.style.fontWeight = 'bold';
+            dateStampDiv.style.color = 'red';
+
+            // Create a new div element for the additional message
+            const warningDiv = document.createElement('div');
+            warningDiv.style.color = 'black';
+            warningDiv.style.fontSize = '1.5em';
+            warningDiv.style.fontStyle = 'italic';
+            warningDiv.textContent = 'Report may be out of date, please confirm!';
+
+            // Insert the new div element after the dateStamp div
+            dateStampDiv.insertAdjacentElement('afterend', warningDiv);
+
+            console.log('The report date is more than $MaxReportAgeInMinutes minutes ago.');
+        } else {
+            console.log('The report date is within the last $MaxReportAgeInMinutes minutes.');
+        }
     });
 </script>
 "@
