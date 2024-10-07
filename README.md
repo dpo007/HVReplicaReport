@@ -10,6 +10,8 @@ The available parameters are:
 
 `SkipSettingsCheck`: A switch that skips checking if VM settings match in replica(s).  (Less info, but faster report generation)
 
+`MaxReportAgeInMinutes`: Specifies the maximum age, in minutes, that the report data can be before it is considered outdated. If the report data is older than this value, a warning will be displayed in the generated HTML report.
+
 **Example usage:**
 
 `.\Get-HVReplicaReport.ps1 -ReportFilePath 'C:\Users\JohnDoe\Documents\ReplicaReport.html'`
