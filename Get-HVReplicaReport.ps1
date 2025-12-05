@@ -186,18 +186,18 @@ $ErrorActionPreference = 'Stop'
 Write-Host 'Loading list of Hyper-V Host Servers from host list file...'
 
 # Build path to host list file
-$settingsPath = Join-Path -Path $PSScriptRoot -ChildPath 'hvhosts.json'
+$hostListPath = Join-Path -Path $PSScriptRoot -ChildPath 'hvhosts.json'
 
 # Validate host list file exists
-if (!(Test-Path -Path $settingsPath)) {
-    Write-Error ('hvhosts.json file not found at: {0}.  See hvhostsExample.json.' -f $settingsPath)
+if (!(Test-Path -Path $hostListPath)) {
+    Write-Error ('hvhosts.json file not found at: {0}.  See hvhostsExample.json.' -f $hostListPath)
     exit
 }
 
 # Parse host list file
-$jsonContent = Get-Content -Path $settingsPath -Raw
-$settings = ConvertFrom-Json -InputObject $jsonContent
-$hvHosts = $settings.hvHosts
+$jsonContent = Get-Content -Path $hostListPath -Raw
+$hvHostConfig = ConvertFrom-Json -InputObject $jsonContent
+$hvHosts = $hvHostConfig.hvHosts
 
 # Display loaded configuration
 Write-Host 'List of host servers loaded from host list file:'
