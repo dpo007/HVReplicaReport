@@ -1,207 +1,415 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 #Requires -Modules Hyper-V
+
+<#
+.SYNOPSIS
+    Generates an HTML report of Hyper-V VM replication status and settings across multiple hosts.
+
+.DESCRIPTION
+    This script collects replication information from multiple Hyper-V hosts, compares VM settings
+    between primary and replica VMs, and generates a comprehensive HTML report with visual indicators
+    for replication health and settings mismatches.
+
+.PARAMETER ReportFilePath
+    Path where the HTML report will be saved. Default: c:\temp\ReplicaReport.html
+
+.PARAMETER MaxReportAgeInMinutes
+    Age threshold in minutes for report staleness warning. Default: 60
+
+.PARAMETER SkipSettingsCheck
+    Skip the VM settings comparison between primary and replica VMs.
+
+.PARAMETER ThrottleLimit
+    Controls how many Hyper-V hosts are queried in parallel. Must be between 1 and [int]::MaxValue. Default: 4.
+#>
+
 param (
     [string]$ReportFilePath = 'c:\temp\ReplicaReport.html',
     [int]$MaxReportAgeInMinutes = 60,
-    [switch]$SkipSettingsCheck
+    [switch]$SkipSettingsCheck,
+    [ValidateRange(1, [int]::MaxValue)]
+    [int]$ThrottleLimit = 4
 )
 
-###########################
 #region Function Definitions
-#############################
 
-function Test-VMReplicaSettingsMatch {
+function Test-VMSettingsEqual {
+    <#
+    .SYNOPSIS
+        Compares two pre-collected VM settings objects for equality.
+
+    .DESCRIPTION
+        Takes two settings objects (already gathered) and compares them by converting
+        to JSON and checking for differences. More efficient than Test-VMReplicaSettingsMatch
+        when settings are already cached.
+
+    .PARAMETER PrimarySettings
+        Settings object for the primary VM
+
+    .PARAMETER ReplicaSettings
+        Settings object for the replica VM
+
+    .OUTPUTS
+        Boolean - True if settings match, False if they differ
+    #>
     param (
         [Parameter(Mandatory = $true)]
-        [string]$VMName,
+        [psobject]$PrimarySettings,
+
         [Parameter(Mandatory = $true)]
-        [string]$PrimaryHost,
-        [Parameter(Mandatory = $true)]
-        [string]$ReplicaHost
+        [psobject]$ReplicaSettings
     )
 
-    # Get settings of primary VM (on PrimaryHost)
-    $VM1 = Get-VM -ComputerName $PrimaryHost -Name $VMName
+    # Remove host-specific fields so only VM configuration is compared
+    $primaryComparable = $PrimarySettings | Select-Object -Property * -ExcludeProperty HostName
+    $replicaComparable = $ReplicaSettings | Select-Object -Property * -ExcludeProperty HostName
 
-    # Get detailed information about the VM's memory, cpu.
-    $VM1Memory = Get-VMMemory -VM $VM1
-    $VM1CPU = Get-VMProcessor -VM $VM1
+    # Convert both settings objects to JSON for comparison
+    # Use a consistent depth so nested properties (e.g. SCSI controllers) are fully captured
+    $primaryJson = $primaryComparable | ConvertTo-Json -Depth 10
+    $replicaJson = $replicaComparable | ConvertTo-Json -Depth 10
 
-    # Use Get-VHD to gather information about all VHDs or VHDXs attached to the VM
-    $VM1HardDrives = Get-VHD -VMId $VM1.VMId -ComputerName $PrimaryHost
-
-    # Get a count of SCSI controllers attached to the VM
-    $VM1SCSIControllers = Get-VMScsiController -VM $VM1
-
-    # Combine the returned objects into a single object
-    $VM1Settings = New-Object -TypeName PSObject -Property @{
-        VMName          = $VM1.Name
-        MemoryStartup   = $VM1Memory.Startup
-        MemoryMinimum   = $VM1Memory.Minimum
-        MemoryMaximum   = $VM1Memory.Maximum
-        CPUCount        = $VM1CPU.Count
-        HardDriveCount  = $VM1HardDrives.Count
-        HardDriveSize   = $VM1HardDrives.Size
-        SCSIControllers = $VM1SCSIControllers | Select-Object -Property Name, Drives
-    }
-
-    # Get settings of replica VM (on ReplicaHost)
-    $VM2 = Get-VM -ComputerName $ReplicaHost -Name $VMName
-
-    # Get detailed information about the VM's memory, cpu.
-    $VM2Memory = Get-VMMemory -VM $VM2
-    $VM2CPU = Get-VMProcessor -VM $VM2
-
-    # Use Get-VHD to gather information about all VHDs or VHDXs attached to the VM
-    $VM2HardDrives = Get-VHD -VMId $VM2.VMId -ComputerName $ReplicaHost
-
-    # Get a count of SCSI controllers attached to the VM
-    $VM2SCSIControllers = Get-VMScsiController -VM $VM2
-
-    # Combine the returned objects into a single object
-    $VM2Settings = New-Object -TypeName PSObject -Property @{
-        VMName          = $VM2.Name
-        MemoryStartup   = $VM2Memory.Startup
-        MemoryMinimum   = $VM2Memory.Minimum
-        MemoryMaximum   = $VM2Memory.Maximum
-        CPUCount        = $VM2CPU.Count
-        HardDriveCount  = $VM2HardDrives.Count
-        HardDriveSize   = $VM2HardDrives.Size
-        SCSIControllers = $VM2SCSIControllers | Select-Object -Property Name, Drives
-    }
-
-    # Convert the VM settings objects to JSON and compare them
-    $VM1Json = $VM1Settings | ConvertTo-Json
-    $VM2Json = $VM2Settings | ConvertTo-Json
-
-    # Compare the settings of VM1 and VM2 returning True if the match and False if they don't.
-    return !(Compare-Object $VM1Json $VM2Json)
+    # Return true only when the serialized representations are identical
+    return ($primaryJson -eq $replicaJson)
 }
 
-##############################
+function Get-HostReplicationAndSettings {
+    <#
+    .SYNOPSIS
+        Retrieves replication status and VM settings from a single Hyper-V host.
+
+    .DESCRIPTION
+        Connects to a Hyper-V host, retrieves all VM replication information (excluding Extended replicas),
+        and collects detailed settings for each replicated VM. Designed to run in parallel across multiple hosts.
+
+    .PARAMETER HostName
+        Name of the Hyper-V host to query
+
+    .OUTPUTS
+        PSCustomObject containing HostName, ReplicationInfo array, and VmSettings array
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$HostName
+    )
+
+    # Nested helper function to build a normalized VM settings object
+    function New-VMSettingsObject {
+        <#
+        .SYNOPSIS
+            Creates a standardized settings object for a VM.
+
+        .DESCRIPTION
+            Gathers memory, CPU, storage, and SCSI controller information
+            for a VM and packages it into a consistent format for comparison.
+        #>
+        param (
+            [Parameter(Mandatory = $true)]
+            [Microsoft.HyperV.PowerShell.VirtualMachine]$VM,
+
+            [Parameter(Mandatory = $true)]
+            [string]$CurrentHost
+        )
+
+        # Collect VM resource information
+        $vmMemory = Get-VMMemory -VM $VM
+        $vmCPU = Get-VMProcessor -VM $VM
+        $vmHardDrives = Get-VHD -VMId $VM.VMId -ComputerName $CurrentHost | Sort-Object -Property Path
+        $vmSCSIControllers = Get-VMScsiController -VM $VM | Sort-Object -Property Name
+
+        # Normalize drive/controller data to avoid host-specific differences
+        $normalizedHardDriveSizes = $vmHardDrives | ForEach-Object { $_.Size }
+        $normalizedScsiControllers = $vmSCSIControllers | ForEach-Object {
+            [pscustomobject]@{
+                Name       = $_.Name
+                DriveCount = ($_.Drives).Count
+            }
+        }
+
+        # Return standardized settings object
+        return [pscustomobject]@{
+            HostName        = $CurrentHost
+            VMName          = $VM.Name
+            MemoryStartup   = $vmMemory.Startup
+            MemoryMinimum   = $vmMemory.Minimum
+            MemoryMaximum   = $vmMemory.Maximum
+            CPUCount        = $vmCPU.Count
+            HardDriveCount  = $vmHardDrives.Count
+            HardDriveSize   = $normalizedHardDriveSizes
+            SCSIControllers = $normalizedScsiControllers
+        }
+    }
+
+    # Initialize result containers
+    $hostReplication = @()
+    $hostSettings = @()
+
+    try {
+        # Retrieve all replication relationships (excluding Extended replicas)
+        $hostReplication = Get-VMReplication -ComputerName $HostName -ErrorAction Stop |
+        Where-Object { $_.RelationshipType -ne 'Extended' }
+
+        # Get unique list of VMs involved in replication
+        $vmNamesOnHost = $hostReplication | Select-Object -ExpandProperty Name -Unique
+
+        # Collect detailed settings for each replicated VM
+        foreach ($vmName in $vmNamesOnHost) {
+            try {
+                $vm = Get-VM -ComputerName $HostName -Name $vmName -ErrorAction Stop
+                $hostSettings += New-VMSettingsObject -VM $vm -CurrentHost $HostName
+            }
+            catch {
+                Write-Warning ("[{0}] Failed to gather settings for VM '{1}': {2}" -f $HostName, $vmName, $_.Exception.Message)
+            }
+        }
+    }
+    catch {
+        Write-Warning ("[{0}] Failed to retrieve replication data: {1}" -f $HostName, $_.Exception.Message)
+    }
+
+    # Return combined host data
+    return [pscustomobject]@{
+        HostName        = $HostName
+        ReplicationInfo = $hostReplication
+        VmSettings      = $hostSettings
+    }
+}
+
 #endregion Function Definitions
-################################
 
-#################
-# Main Entry Point
-###################
+#region Main Script Execution
 
-# Set default error action
+# Configure error handling behavior
 $ErrorActionPreference = 'Stop'
 
-# Load list of Hyper-V Host Servers from settings file
-Write-Host ('Loading list of Hyper-V Host Servers from settings file...')
-$settingsPath = Join-Path -Path $PSScriptRoot -ChildPath 'settings.json'
+#region Load Configuration
+Write-Host 'Loading list of Hyper-V Host Servers from host list file...'
 
-# If the settings file doesn't exist, abort script with error
+# Build path to host list file
+$settingsPath = Join-Path -Path $PSScriptRoot -ChildPath 'hvhosts.json'
+
+# Validate host list file exists
 if (!(Test-Path -Path $settingsPath)) {
-    Write-Error ('Settings.json file not found at: {0}.  See ExampleSettings.json.' -f $settingsPath)
+    Write-Error ('hvhosts.json file not found at: {0}.  See hvhostsExample.json.' -f $settingsPath)
     exit
 }
 
+# Parse host list file
 $jsonContent = Get-Content -Path $settingsPath -Raw
 $settings = ConvertFrom-Json -InputObject $jsonContent
 $hvHosts = $settings.hvHosts
-Write-Host 'List of host servers loaded from settings file:'
+
+# Display loaded configuration
+Write-Host 'List of host servers loaded from host list file:'
 $hvHosts | ForEach-Object { Write-Host ('- {0}' -f $_) }
+#endregion Load Configuration
 
-# Retrieve virtual machine replication information from Hyper-V hosts
-# Filter the output to only include virtual machine replications that have a RelationshipType other than 'Extended'
+#region Collect Replication Data
 Write-Host ('Retrieving virtual machine replication information from {0} Hyper-V hosts...' -f $hvHosts.Count)
-$repInfo = Get-VMReplication -ComputerName $hvHosts | Where-Object { $_.RelationshipType -ne 'Extended' }
 
+# Initialize job tracking
+$jobs = @()
+$hostResults = @()
+
+# Capture helper function definition so jobs can import it within their runspaces
+$hostReplicationFuncDefinition = ${function:Get-HostReplicationAndSettings}.Ast.Extent.Text
+
+# Capture time for $GenerationTimeStart
+$GenerationTimeStart = Get-Date
+
+# Start parallel jobs with throttling to avoid overwhelming system
+foreach ($hvHost in $hvHosts) {
+    # Wait for a job slot to become available if at throttle limit
+    while ($jobs.Count -ge $ThrottleLimit) {
+        $finished = Wait-Job -Job $jobs -Any
+        $hostResults += Receive-Job -Job $finished
+        $jobs = $jobs | Where-Object { $_.Id -ne $finished.Id }
+    }
+
+    # Start background job to query this host
+    $jobs += Start-ThreadJob -ArgumentList $hvHost, $hostReplicationFuncDefinition -ScriptBlock {
+        param($hostName, $functionDefinition)
+
+        # Rehydrate Get-HostReplicationAndSettings inside this runspace
+        . ([scriptblock]::Create($functionDefinition))
+
+        Import-Module Hyper-V -ErrorAction Stop
+        Get-HostReplicationAndSettings -HostName $hostName
+    }
+}
+
+# Wait for remaining jobs to complete
+if ($jobs.Count -gt 0) {
+    Wait-Job -Job $jobs | Out-Null
+    $hostResults += Receive-Job -Job $jobs
+    Remove-Job -Job $jobs -Force
+}
+
+# Extract replication info and VM settings from host results
+$repInfo = $hostResults | ForEach-Object { $_.ReplicationInfo } | Where-Object { $_ }
+$allVmSettings = $hostResults | ForEach-Object { $_.VmSettings } | Where-Object { $_ }
+
+# Build fast lookup hashtable: "HostName|VMName" -> Settings object
+$settingsByHostAndName = @{}
+foreach ($settingsRow in $allVmSettings) {
+    $key = '{0}|{1}' -f $settingsRow.HostName, $settingsRow.VMName
+    $settingsByHostAndName[$key] = $settingsRow
+}
+#endregion Collect Replication Data
+
+#region Generate Report
 Write-Host 'Generating report...'
 
-# Sort the Replication info output by Name and Mode
-# Convert the output to HTML and specify the properties to include in the table
-$repInfoHTML = $repInfo | Sort-Object Name, Mode | ConvertTo-Html -Fragment -Property Name, Mode, PrimaryServer, ReplicaServer, State, Health, FrequencySec, RelationshipType -PreContent '<div id="ReplicationTable">' -PostContent '</div>'
+# Generate HTML table from replication data
+$repInfoHTML = $repInfo |
+Sort-Object Name, Mode |
+ConvertTo-Html -Fragment -Property Name, Mode, PrimaryServer, ReplicaServer, State, Health, FrequencySec, RelationshipType -PreContent '<div id="ReplicationTable">' -PostContent '</div>'
+#endregion Generate Report
 
+#region VM Settings Comparison
 if (!$SkipSettingsCheck) {
     Write-Host 'Performing VM settings check...'
 
-    $namesOfVMsWithReplicas = ($repInfo | Where-Object { $_.ReplicationMode -like '*Replica' } | Select-Object -ExpandProperty Name -Unique | Sort-Object)
+    # Identify VMs with replicas and categorize by replication mode
+    $namesOfVMsWithReplicas = ($repInfo |
+        Where-Object { $_.ReplicationMode -like '*Replica' } |
+        Select-Object -ExpandProperty Name -Unique |
+        Sort-Object)
+
     $primaryVMs = $repInfo | Where-Object { $_.ReplicationMode -eq 'Primary' }
     $replicaVMs = $repInfo | Where-Object { $_.ReplicationMode -eq 'Replica' }
     $extendedReplicaVMs = $repInfo | Where-Object { $_.ReplicationMode -eq 'ExtendedReplica' }
 
-    # Create an empty array to store the results of the comparison
+    # Initialize results array for replica settings comparison
     $replicaSettingsMatch = @()
 
-    # Loop through each VM that has a replica
+    # Compare primary and replica VM settings
     foreach ($vmName in $namesOfVMsWithReplicas) {
         Write-Host ('Checking replica settings for VM: {0}' -f $vmName)
 
-        # Get the primary and replica VM objects
+        # Locate primary and replica VM objects
         $primaryVM = $primaryVMs | Where-Object { $_.Name -eq $vmName }
         $replicaVM = $replicaVMs | Where-Object { $_.Name -eq $vmName }
 
-        # More than one ReplicaVM returned?
+        # Handle multiple replica VMs (can occur during Extended Replica initialization)
         if ($replicaVM.Count -gt 1) {
-            Write-Host ('* More than one replica VM returned for VM: {0}. Is there an Extended Replica initialization in progress?' -f $vmName)
-            # Select only the first ReplicaVM returned
+            Write-Host ('* Multiple replica VMs found for: {0}. Extended Replica initialization may be in progress.' -f $vmName)
             $replicaVM = $replicaVM | Select-Object -First 1
-            Write-Host ('* Comparing only the first replica VM returned (Host: {0}) for VM: {1}' -f $replicaVM.ReplicaServer, $vmName)
+            Write-Host ('* Using first replica (Host: {0}) for comparison' -f $replicaVM.ReplicaServer)
         }
 
-        # Test the settings of the primary and replica VMs to see if they match
-        $settingsMatch = Test-VMReplicaSettingsMatch -VMName $vmName -PrimaryHost $primaryVM.PrimaryServer -ReplicaHost $replicaVM.ReplicaServer
+        # Build lookup keys for settings cache
+        $primaryKey = '{0}|{1}' -f $primaryVM.PrimaryServer, $vmName
+        $replicaKey = '{0}|{1}' -f $replicaVM.ReplicaServer, $vmName
 
-        # Create a custom object to store the results of the comparison
+        # Retrieve cached settings
+        $primarySettings = $settingsByHostAndName[$primaryKey]
+        $replicaSettings = $settingsByHostAndName[$replicaKey]
+
+        # Perform comparison if both settings are available
+        if ($null -eq $primarySettings -or $null -eq $replicaSettings) {
+            Write-Warning ('Could not find cached settings for primary/replica pair: {0}' -f $vmName)
+            $settingsMatch = $null
+        }
+        else {
+            $settingsMatch = Test-VMSettingsEqual -PrimarySettings $primarySettings -ReplicaSettings $replicaSettings
+        }
+
+        # Store comparison result
         $replicaSettingsMatch += New-Object -TypeName PSObject -Property @{
             VMName        = $vmName
             SettingsMatch = $settingsMatch
         }
     }
 
-    # Create an empty array to store the results of the comparison
+    # Initialize results array for extended replica settings comparison
     $extendedReplicaSettingsMatch = @()
 
-    # Loop through each VM that has an extended replica
+    # Compare primary and extended replica VM settings
     foreach ($vmName in $namesOfVMsWithReplicas) {
-        # Get the primary and replica VM objects
+        # Locate primary and extended replica VM objects
         $primaryVM = $primaryVMs | Where-Object { $_.Name -eq $vmName }
         $extendedReplicaVM = $extendedReplicaVMs | Where-Object { $_.Name -eq $vmName }
 
-        # If the extended replica is not found, skip to the next VM
+        # Skip if this VM doesn't have an extended replica
         if ($null -eq $extendedReplicaVM) {
             continue
         }
 
         Write-Host ('Checking extended replica settings for VM: {0}' -f $vmName)
 
-        # Test the settings of the primary and replica VMs to see if they match
-        $settingsMatch = Test-VMReplicaSettingsMatch -VMName $vmName -PrimaryHost $primaryVM.PrimaryServer -ReplicaHost $extendedReplicaVM.ReplicaServer
+        # Build lookup keys for settings cache
+        $primaryKey = '{0}|{1}' -f $primaryVM.PrimaryServer, $vmName
+        $extendedKey = '{0}|{1}' -f $extendedReplicaVM.ReplicaServer, $vmName
 
-        # Create a custom object to store the results of the comparison
+        # Retrieve cached settings
+        $primarySettings = $settingsByHostAndName[$primaryKey]
+        $extendedReplicaSettings = $settingsByHostAndName[$extendedKey]
+
+        # Perform comparison if both settings are available
+        if ($null -eq $primarySettings -or $null -eq $extendedReplicaSettings) {
+            Write-Warning ('Could not find cached settings for primary/extended replica pair: {0}' -f $vmName)
+            $settingsMatch = $null
+        }
+        else {
+            $settingsMatch = Test-VMSettingsEqual -PrimarySettings $primarySettings -ReplicaSettings $extendedReplicaSettings
+        }
+
+        # Store comparison result
         $extendedReplicaSettingsMatch += New-Object -TypeName PSObject -Property @{
             VMName        = $vmName
             SettingsMatch = $settingsMatch
         }
     }
 
-    # Use namesOfVMsWithReplicas, replicaSettingsMatch and extendedReplicaSettingsMatch to build an array of objects containing entries for each named VM with a replica.
-    # The object will contain the VM name, the replica mode, and the result of the settings comparisons.
+    # Build consolidated report showing both replica and extended replica comparison results
     $replicaReport = @()
     foreach ($vmName in $namesOfVMsWithReplicas) {
         $replicaReport += New-Object -TypeName PSObject -Property @{
             Name                         = $vmName
-            ReplicaSettingsMatch         = $replicaSettingsMatch | Where-Object { $_.VMName -eq $vmName } | Select-Object -ExpandProperty SettingsMatch
-            ExtendedReplicaSettingsMatch = $extendedReplicaSettingsMatch | Where-Object { $_.VMName -eq $vmName } | Select-Object -ExpandProperty SettingsMatch
+            ReplicaSettingsMatch         = $replicaSettingsMatch |
+            Where-Object { $_.VMName -eq $vmName } |
+            Select-Object -ExpandProperty SettingsMatch
+            ExtendedReplicaSettingsMatch = $extendedReplicaSettingsMatch |
+            Where-Object { $_.VMName -eq $vmName } |
+            Select-Object -ExpandProperty SettingsMatch
         }
     }
 
-    # Convert the replicaReport array to HTML and specify the properties to include in the table
-    $replicaReportHTML = $replicaReport | Sort-Object Name | ConvertTo-Html -Fragment -Property Name, ReplicaSettingsMatch, ExtendedReplicaSettingsMatch -PreContent '<div id="SettingsMatchTable">' -PostContent '</div>'
+    # Generate HTML table from settings comparison report
+    $replicaReportHTML = $replicaReport |
+    Sort-Object Name |
+    ConvertTo-Html -Fragment -Property Name, ReplicaSettingsMatch, ExtendedReplicaSettingsMatch -PreContent '<div id="SettingsMatchTable">' -PostContent '</div>'
 
-    # Combine $replicaReportHTML and $repInfoHTML into a single HTML
+    # Append settings comparison table to main replication report
     $repInfoHTML = $repInfoHTML + '<br />' + $replicaReportHTML
 }
+#endregion VM Settings Comparison
 
-# Append time and date stamp to report.
+# Capture time for $GenerationTimeEnd
+$GenerationTimeEnd = Get-Date
+
+#region Finalize HTML Report
 Write-Host 'Appending time and date stamp to report...'
-$repInfoHTML = $repInfoHTML + ('<div id="dateStamp">Report created on {0}, at {1}</div>' -f (Get-Date).ToString('MMM dd, yyyy'), (Get-Date).ToString('h:mm:ss tt'))
 
-# Define the HTML header.
+# Add timestamp to report for freshness tracking, including generation duration
+$generationDuration = $GenerationTimeEnd - $GenerationTimeStart
+$genMinutes = $generationDuration.Minutes
+$genSeconds = $generationDuration.Seconds
+
+$minutesLabel = if ($genMinutes -eq 1) { 'minute' } else { 'minutes' }
+$secondsLabel = if ($genSeconds -eq 1) { 'second' } else { 'seconds' }
+
+$repInfoHTML = $repInfoHTML + ('<div id="dateStamp">Report created on {0}, at {1}.  (Generated in {2} {3} and {4} {5}.)</div>' -f
+    (Get-Date).ToString('MMM dd, yyyy'),
+    (Get-Date).ToString('h:mm:ss tt'),
+    $genMinutes,
+    $minutesLabel,
+    $genSeconds,
+    $secondsLabel
+)
+
+# Define CSS styling for the HTML report
 $htmlHeader = @"
 <style>
 body
@@ -250,15 +458,14 @@ div#dateStamp
 </style>
 "@
 
-# Define the HTML footer that contains JS scripts.
+# Define JavaScript for interactive report features
 $htmlFooter = @"
 <script type="text/javascript">
     document.addEventListener('DOMContentLoaded', function() {
-        // Get all <td> elements in the document
+        // Color-code boolean values in table cells (True = green, False = red)
         const tds = document.getElementsByTagName('td');
         const tdsLength = tds.length;
 
-        // Loop through each <td> element
         for (let i = 0; i < tdsLength; i++) {
             const textContent = tds[i].textContent;
             if (textContent === 'False') {
@@ -268,28 +475,25 @@ $htmlFooter = @"
             }
         }
 
-        // Select the table within the element with id 'ReplicationTable'
+        // Color-code Health column values (Normal = green, others = red)
         const table = document.querySelector('#ReplicationTable table');
         if (table) {
-            // Get all <th> elements (table headers) in the table
             const headers = table.getElementsByTagName('th');
             let healthColumnIndex = -1;
 
-            // Loop through the headers to find the 'Health' column
+            // Find the Health column index
             Array.from(headers).forEach((header, index) => {
                 if (header.textContent.trim() === 'Health') {
                     healthColumnIndex = index;
                 }
             });
 
-            // If the 'Health' column is found
+            // Apply color coding to Health column cells
             if (healthColumnIndex !== -1) {
-                // Get all rows in the table
                 const rows = table.getElementsByTagName('tr');
                 const rowsLength = rows.length;
 
-                // Loop through each row, starting from 1 to skip the header row
-                for (let i = 1; i < rowsLength; i++) {
+                for (let i = 1; i < rowsLength; i++) {  // Start at 1 to skip header row
                     const cells = rows[i].getElementsByTagName('td');
                     const healthCell = cells[healthColumnIndex];
                     if (healthCell) {
@@ -300,75 +504,64 @@ $htmlFooter = @"
             }
         }
 
-        // Get all table rows
+        // Highlight matching VM names across tables on hover
         const tableRows = document.querySelectorAll('table tr');
 
-        // Add mouseover and mouseout event listeners to each row
         tableRows.forEach(row => {
             row.addEventListener('mouseover', () => {
                 const firstCell = row.cells[0];
                 const valueToMatch = firstCell.textContent;
+
                 tableRows.forEach(otherRow => {
                     if (otherRow === row) {
-                        // Highlight the row being hovered over
+                        // Highlight the currently hovered row (bright yellow)
                         row.style.backgroundColor = '#FBF719';
                     } else if (otherRow.cells[0].textContent === valueToMatch) {
-                        // Highlight rows with matching first cell content
+                        // Highlight matching VM names in other tables (dimmer yellow)
                         otherRow.style.backgroundColor = '#E1DE16';
                     }
                 });
             });
 
             row.addEventListener('mouseout', () => {
-                // Remove background color when mouse leaves the row
+                // Clear all row highlighting when mouse leaves
                 tableRows.forEach(otherRow => {
                     otherRow.style.backgroundColor = '';
                 });
             });
         });
 
-        // Get the text content of the dateStamp div
+        // Check report age and display warning if stale
         const dateStampText = document.getElementById('dateStamp').textContent;
-
-        // Extract the date and time part from the text
         const dateTimeString = dateStampText.match(/on (.+), at (.+)/);
         const dateString = dateTimeString[1];
         const timeString = dateTimeString[2];
-
-        // Combine date and time into a single string
         const fullDateTimeString = ```${dateString} `${timeString}``;
 
-        // Parse the extracted date and time into a Date object
+        // Parse report timestamp and calculate age
         const reportDate = new Date(fullDateTimeString);
-
-        // Get the current date and time
         const currentDate = new Date();
-
-        // Calculate the difference in milliseconds
         const timeDifference = currentDate - reportDate;
-
-        // Convert the difference to minutes
         const timeDifferenceInMinutes = timeDifference / (1000 * 60);
 
-        // Check if the report date is more than the specified number of minutes ago
+        // Display warning if report exceeds configured age threshold
         if (timeDifferenceInMinutes > $MaxReportAgeInMinutes) {
-            // Move the div element to the top of the body
             const dateStampDiv = document.getElementById('dateStamp');
+
+            // Move timestamp to top of page
             document.body.insertBefore(dateStampDiv, document.body.firstChild);
 
-            // Style the div element
+            // Style as prominent warning
             dateStampDiv.style.fontSize = '2em';
             dateStampDiv.style.fontWeight = 'bold';
             dateStampDiv.style.color = 'red';
 
-            // Create a new div element for the additional message
+            // Add warning message
             const warningDiv = document.createElement('div');
             warningDiv.style.color = 'black';
             warningDiv.style.fontSize = '1.5em';
             warningDiv.style.fontStyle = 'italic';
             warningDiv.textContent = 'Report may be out of date, please confirm!';
-
-            // Insert the new div element after the dateStamp div
             dateStampDiv.insertAdjacentElement('afterend', warningDiv);
 
             console.log('The report date is more than $MaxReportAgeInMinutes minutes ago.');
@@ -379,7 +572,7 @@ $htmlFooter = @"
 </script>
 "@
 
-# Combine the HTML header, footer and the report HTML into a single HTML document.
+# Assemble complete HTML document
 $htmlTemplate = @"
 <html>
 <head>
@@ -392,8 +585,11 @@ $htmlFooter
 </html>
 "@
 
-# Write the HTML to a file.
+# Write the HTML report to disk
 Write-Host ('Writing the HTML report file to: {0}' -f $ReportFilePath)
 $htmlTemplate | Out-File $ReportFilePath
 
 Write-Host 'Report generation completed.'
+#endregion Finalize HTML Report
+
+#endregion Main Script Execution
