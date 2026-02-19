@@ -175,6 +175,47 @@ function Get-HostReplicationAndSettings {
     }
 }
 
+function Send-ReplicaReporAlert {
+    <#
+    .SYNOPSIS
+        Sends an email alerts for the Hyper-V replica reporter, such as when a report is stale or a critical issue is detected.
+
+    .PARAMETER To
+        Recipient email addresses. Default: ITStaff@mainstreetcu.ca
+
+    .PARAMETER From
+        Sender email addresses. Default: hvReplicaReporter@mainstreetcu.ca
+
+    .PARAMETER Message
+        Email message body (can include HTML content).
+
+    .PARAMETER Subject
+        Email subject line. Default: 'Hyper-V Replica Reporter Alert'
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+        [string]$Subject = 'Hyper-V Replica Reporter Alert',
+        [string[]]$To = @('ITStaff@mainstreetcu.ca'),
+        [string[]]$From = @('hvReplicaReporter@mainstreetcu.ca'),
+    )
+
+    $mailParams = @{
+        SmtpServer                 = 'mainstreetcu-ca.mail.protection.outlook.com'
+        Port                       = 25
+        UseSSL                     = $true
+        From                       = $From
+        To                         = $To
+        Subject                    = $Subject
+        Body                       = $Message
+        BodyAsHtml                 = $true
+        DeliveryNotificationOption = 'OnFailure', 'OnSuccess'
+    }
+
+    Send-MailMessage @mailParams
+}
+
 #endregion Function Definitions
 
 #region Main Script Execution
