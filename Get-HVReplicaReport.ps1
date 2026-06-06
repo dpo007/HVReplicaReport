@@ -73,6 +73,108 @@ function Test-VMSettingsEqual {
     return ($primaryJson -eq $replicaJson)
 }
 
+
+function Get-HostLookupAliases {
+    <#
+    .SYNOPSIS
+        Builds equivalent host names for cache lookups.
+
+    .DESCRIPTION
+        Hyper-V replication relationships can store either a short host name or an FQDN
+        for PrimaryServer and ReplicaServer. The settings cache is populated from the
+        configured host list, so cache lookups need to tolerate either form.
+
+    .PARAMETER HostName
+        Host name from the replication relationship or settings cache.
+
+    .OUTPUTS
+        String array containing normalized FQDN/original and short-name aliases.
+    #>
+    param (
+        [AllowNull()]
+        [string]$HostName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($HostName)) {
+        return @()
+    }
+
+    $normalizedHostName = $HostName.Trim().TrimEnd('.')
+    $shortHostName = ($normalizedHostName -split '\.')[0]
+
+    return @($normalizedHostName, $shortHostName) |
+    Where-Object { ![string]::IsNullOrWhiteSpace($_) } |
+    Select-Object -Unique
+}
+
+function New-VMSettingsLookupKey {
+    <#
+    .SYNOPSIS
+        Builds the composite key used for VM settings lookups.
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$HostName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$VMName
+    )
+
+    return '{0}|{1}' -f $HostName, $VMName
+}
+
+function Add-VMSettingsLookupEntry {
+    <#
+    .SYNOPSIS
+        Adds a VM settings object to the lookup table by all supported host aliases.
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Lookup,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$SettingsRow
+    )
+
+    foreach ($hostAlias in (Get-HostLookupAliases -HostName $SettingsRow.HostName)) {
+        $key = New-VMSettingsLookupKey -HostName $hostAlias -VMName $SettingsRow.VMName
+
+        if ($Lookup.ContainsKey($key) -and $Lookup[$key].HostName -ne $SettingsRow.HostName) {
+            Write-Warning ('Duplicate VM settings cache key {0} found for hosts {1} and {2}; keeping the first entry.' -f $key, $Lookup[$key].HostName, $SettingsRow.HostName)
+            continue
+        }
+
+        $Lookup[$key] = $SettingsRow
+    }
+}
+
+function Get-VMSettingsFromLookup {
+    <#
+    .SYNOPSIS
+        Retrieves VM settings using exact, FQDN, or short host-name forms.
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Lookup,
+
+        [Parameter(Mandatory = $true)]
+        [string]$HostName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$VMName
+    )
+
+    foreach ($hostAlias in (Get-HostLookupAliases -HostName $HostName)) {
+        $key = New-VMSettingsLookupKey -HostName $hostAlias -VMName $VMName
+
+        if ($Lookup.ContainsKey($key)) {
+            return $Lookup[$key]
+        }
+    }
+
+    return $null
+}
+
 function Get-HostReplicationAndSettings {
     <#
     .SYNOPSIS
@@ -249,11 +351,12 @@ if ($jobs.Count -gt 0) {
 $repInfo = $hostResults | ForEach-Object { $_.ReplicationInfo } | Where-Object { $_ }
 $allVmSettings = $hostResults | ForEach-Object { $_.VmSettings } | Where-Object { $_ }
 
-# Build fast lookup hashtable: "HostName|VMName" -> Settings object
+# Build fast lookup hashtable: "HostNameAlias|VMName" -> Settings object
+# Include both short-name and FQDN aliases so replication relationships configured with
+# either server-name format can still find the settings collected from hvhosts.json.
 $settingsByHostAndName = @{}
 foreach ($settingsRow in $allVmSettings) {
-    $key = '{0}|{1}' -f $settingsRow.HostName, $settingsRow.VMName
-    $settingsByHostAndName[$key] = $settingsRow
+    Add-VMSettingsLookupEntry -Lookup $settingsByHostAndName -SettingsRow $settingsRow
 }
 #endregion Collect Replication Data
 
@@ -298,13 +401,9 @@ if (!$SkipSettingsCheck) {
             Write-Host ('* Using first replica (Host: {0}) for comparison' -f $replicaVM.ReplicaServer)
         }
 
-        # Build lookup keys for settings cache
-        $primaryKey = '{0}|{1}' -f $primaryVM.PrimaryServer, $vmName
-        $replicaKey = '{0}|{1}' -f $replicaVM.ReplicaServer, $vmName
-
-        # Retrieve cached settings
-        $primarySettings = $settingsByHostAndName[$primaryKey]
-        $replicaSettings = $settingsByHostAndName[$replicaKey]
+        # Retrieve cached settings using host aliases so short names and FQDNs both match
+        $primarySettings = Get-VMSettingsFromLookup -Lookup $settingsByHostAndName -HostName $primaryVM.PrimaryServer -VMName $vmName
+        $replicaSettings = Get-VMSettingsFromLookup -Lookup $settingsByHostAndName -HostName $replicaVM.ReplicaServer -VMName $vmName
 
         # Perform comparison if both settings are available
         if ($null -eq $primarySettings -or $null -eq $replicaSettings) {
@@ -338,13 +437,9 @@ if (!$SkipSettingsCheck) {
 
         Write-Host ('Checking extended replica settings for VM: {0}' -f $vmName)
 
-        # Build lookup keys for settings cache
-        $primaryKey = '{0}|{1}' -f $primaryVM.PrimaryServer, $vmName
-        $extendedKey = '{0}|{1}' -f $extendedReplicaVM.ReplicaServer, $vmName
-
-        # Retrieve cached settings
-        $primarySettings = $settingsByHostAndName[$primaryKey]
-        $extendedReplicaSettings = $settingsByHostAndName[$extendedKey]
+        # Retrieve cached settings using host aliases so short names and FQDNs both match
+        $primarySettings = Get-VMSettingsFromLookup -Lookup $settingsByHostAndName -HostName $primaryVM.PrimaryServer -VMName $vmName
+        $extendedReplicaSettings = Get-VMSettingsFromLookup -Lookup $settingsByHostAndName -HostName $extendedReplicaVM.ReplicaServer -VMName $vmName
 
         # Perform comparison if both settings are available
         if ($null -eq $primarySettings -or $null -eq $extendedReplicaSettings) {
